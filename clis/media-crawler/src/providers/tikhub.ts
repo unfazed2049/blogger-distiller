@@ -1,4 +1,5 @@
 import type { DataProvider, BloggerInfo, Profile, NotesList, NoteDetail } from './base';
+import { EndpointRouter, TikHubError } from './endpoint-router';
 
 const DEFAULT_BASE_URL = 'https://api.tikhub.io';
 const DEFAULT_TIMEOUT = 60000; // 60 seconds
@@ -17,6 +18,7 @@ export class TikHubProvider implements DataProvider {
   private timeout: number;
   private lastCallTime: number = 0;
   private minInterval: number;
+  private router: EndpointRouter;
   
   constructor(config: { baseUrl?: string; apiKey?: string; timeout?: number; rps?: number } = {}) {
     this.baseUrl = (config.baseUrl || process.env.TIKHUB_BASE_URL || DEFAULT_BASE_URL).replace(/\/$/, '');
@@ -35,6 +37,12 @@ export class TikHubProvider implements DataProvider {
     // Rate limiting setup
     const rps = config.rps || this.resolveRpsLimit();
     this.minInterval = 1000 / Math.max(rps * SAFETY_RATIO, 1); // Convert to milliseconds
+    
+    // Initialize endpoint router with bound request function
+    this.router = new EndpointRouter(
+      this.request.bind(this),
+      'xhs'
+    );
   }
   
   /**
@@ -82,13 +90,9 @@ export class TikHubProvider implements DataProvider {
       throw new Error(`Platform ${platform} not supported yet`);
     }
     
-    // Try search_users endpoint first (more accurate)
+    // Try search_users endpoint first (more accurate) - using endpoint router
     try {
-      const data = await this.request<any>('/api/v1/xiaohongshu/web/search_users', {
-        keyword,
-        page: '1',
-        page_size: '20',
-      });
+      const data = await this.router.call('search_users', { keyword, page: 1 });
       
       const users = this.extractUsersFromSearchUsers(data);
       if (users.length > 0) {
@@ -109,13 +113,8 @@ export class TikHubProvider implements DataProvider {
       console.warn('search_users failed, falling back to search_notes:', error);
     }
     
-    // Fallback to search_notes
-    const data = await this.request<any>('/api/v1/xiaohongshu/web/search_notes', {
-      keyword,
-      page: '1',
-      page_size: '20',
-      sort: 'general',
-    });
+    // Fallback to search_notes - using endpoint router
+    const data = await this.router.call('search_notes', { keyword, page: 1 });
     
     const feeds = this.extractFeedsFromSearch(data);
     if (feeds.length === 0) {
@@ -154,9 +153,7 @@ export class TikHubProvider implements DataProvider {
       throw new Error(`Platform ${platform} not supported yet`);
     }
     
-    const data = await this.request<any>('/api/v1/xiaohongshu/web/get_user_info', {
-      user_id: userId,
-    });
+    const data = await this.router.call('fetch_user_info', { user_id: userId });
     
     return {
       userBasicInfo: data.data?.basic_info || data.data?.user || data.data || {},
@@ -171,10 +168,10 @@ export class TikHubProvider implements DataProvider {
       throw new Error(`Platform ${platform} not supported yet`);
     }
     
-    const params: Record<string, string> = { user_id: userId };
+    const params: Record<string, any> = { user_id: userId };
     if (cursor) params.cursor = cursor;
     
-    const data = await this.request<any>('/api/v1/xiaohongshu/web_v2/fetch_home_notes', params);
+    const data = await this.router.call('fetch_user_notes', params);
     
     const notesData = data.data?.data || data.data || {};
     const noteList = notesData.notes || notesData.items || notesData.feeds || [];
@@ -186,14 +183,16 @@ export class TikHubProvider implements DataProvider {
     };
   }
   
-  async getNoteDetail(platform: string, noteId: string): Promise<NoteDetail> {
+  async getNoteDetail(platform: string, noteId: string, xsecToken?: string): Promise<NoteDetail> {
     if (platform !== 'xhs') {
       throw new Error(`Platform ${platform} not supported yet`);
     }
     
-    const data = await this.request<any>('/api/v1/xiaohongshu/app_v2/get_image_note_detail', {
-      note_id: noteId,
-    });
+    const params: Record<string, any> = { note_id: noteId };
+    if (xsecToken) params.xsec_token = xsecToken;
+    
+    // Use fetch_note_detail_image pool (which will try app, web_v3, web_v2, app_v2 in order)
+    const data = await this.router.call('fetch_note_detail_image', params);
     
     const detail = data.data?.data || data.data || {};
     const noteObj = detail.note || detail.noteData || {};
@@ -206,49 +205,71 @@ export class TikHubProvider implements DataProvider {
       },
       _feed_id: noteId,
       _meta: {
-        source_endpoint: 'app_v2/get_image_note_detail',
+        source_endpoint: data._endpoint_used || 'unknown',
+        source_group: data._endpoint_group || 'unknown',
       },
     };
   }
   
   /**
    * Make HTTP request to TikHub API with rate limiting
+   * This is now used by EndpointRouter internally
    */
-  private async request<T>(endpoint: string, params: Record<string, string> = {}): Promise<T> {
+  private async request(method: string, path: string, params: Record<string, string> = {}, retries: number = 1, delay: number = 2000): Promise<any> {
     await this.throttle();
     
-    const url = new URL(endpoint, this.baseUrl);
+    const url = new URL(path, this.baseUrl);
     Object.entries(params).forEach(([key, value]) => {
-      if (value !== undefined && value !== null) {
-        url.searchParams.append(key, value);
+      if (value !== undefined && value !== null && value !== '') {
+        url.searchParams.append(key, String(value));
       }
     });
     
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.timeout);
     
-    try {
-      const response = await fetch(url.toString(), {
-        headers: {
-          'Authorization': `Bearer ${this.apiKey}`,
-          'Accept': 'application/json',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        },
-        signal: controller.signal,
-      });
-      
-      clearTimeout(timeoutId);
-      
-      if (!response.ok) {
-        const body = await response.text();
-        throw new Error(`TikHub API error: ${response.status} ${response.statusText}\n${body}`);
+    let lastError: any;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const response = await fetch(url.toString(), {
+          headers: {
+            'Authorization': `Bearer ${this.apiKey}`,
+            'Accept': 'application/json',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          },
+          signal: controller.signal,
+        });
+        
+        clearTimeout(timeoutId);
+        
+        if (!response.ok) {
+          const body = await response.text();
+          const error = new TikHubError(
+            `TikHub API error: ${response.status} ${response.statusText}\n${body}`,
+            response.status
+          );
+          throw error;
+        }
+        
+        return await response.json();
+      } catch (error: any) {
+        lastError = error;
+        
+        // Don't retry on non-degradable errors
+        if (error.statusCode && (error.statusCode === 401 || error.statusCode === 402)) {
+          clearTimeout(timeoutId);
+          throw error;
+        }
+        
+        // Retry with delay if not last attempt
+        if (attempt < retries) {
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
       }
-      
-      return await response.json() as T;
-    } catch (error) {
-      clearTimeout(timeoutId);
-      throw error;
     }
+    
+    clearTimeout(timeoutId);
+    throw lastError;
   }
   
   /**

@@ -66,7 +66,7 @@ media-crawler xhs search "博主名" --provider direct-api
 
 **Implementation:**
 ```
-cli-tools/
+clis/
 └── media-crawler/
     ├── package.json
     ├── tsconfig.json
@@ -180,7 +180,7 @@ def analyze_notes_with_llm(notes, api_key, model="gpt-4o-mini"):
 
 **Architecture Design:**
 ```typescript
-// cli-tools/media-crawler/src/providers/base.ts
+// clis/media-crawler/src/providers/base.ts
 interface DataProvider {
   name: string;
   searchBlogger(platform: string, keyword: string): Promise<BloggerInfo>;
@@ -189,13 +189,13 @@ interface DataProvider {
   getNoteDetail(platform: string, noteId: string): Promise<NoteDetail>;
 }
 
-// cli-tools/media-crawler/src/providers/tikhub.ts
+// clis/media-crawler/src/providers/tikhub.ts
 class TikHubProvider implements DataProvider {
   name = "tikhub";
   // TikHub-specific implementation for all platforms
 }
 
-// cli-tools/media-crawler/src/platforms/base.ts
+// clis/media-crawler/src/platforms/base.ts
 interface PlatformAdapter {
   platform: string;
   normalizeProfile(raw: any): Profile;
@@ -203,13 +203,13 @@ interface PlatformAdapter {
   normalizeComments(raw: any): Comment[];
 }
 
-// cli-tools/media-crawler/src/platforms/xhs.ts
+// clis/media-crawler/src/platforms/xhs.ts
 class XHSAdapter implements PlatformAdapter {
   platform = "xhs";
   // XHS-specific data normalization
 }
 
-// cli-tools/media-crawler/src/platforms/douyin.ts
+// clis/media-crawler/src/platforms/douyin.ts
 class DouyinAdapter implements PlatformAdapter {
   platform = "douyin";
   // Douyin-specific data normalization
@@ -273,7 +273,7 @@ const normalizedProfile = adapter.normalizeProfile(rawProfile);
 ## Migration Plan
 
 **Phase 1: CLI Tool Development (Week 1)**
-1. Set up `cli-tools/media-crawler/` project structure
+1. Set up `clis/media-crawler/` project structure
 2. Implement provider interface and TikHub provider
 3. Implement platform adapters (XHS first)
 4. Implement CLI commands (xhs search, profile, notes, details)

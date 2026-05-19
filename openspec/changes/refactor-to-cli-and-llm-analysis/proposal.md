@@ -53,7 +53,7 @@ Refactoring now enables: (a) cleaner platform extensibility through CLI-builder 
 - `scripts/analyze.py` → Functions `classify_content`, `extract_opinion_sentences`, `analyze_writing_structure`, `extract_value_words` replaced with LLM calls
 - `scripts/crawl_blogger.py` → Update to invoke new CLI tool instead of importing Python module
 - `run.py` → Update orchestration to use new CLI tools
-- New: `cli-tools/media-crawler/` directory with TypeScript implementation
+- New: `clis/media-crawler/` directory with TypeScript implementation
 
 **Affected APIs:**
 - TikHub API client (`scripts/utils/tikhub_client.py`) remains unchanged

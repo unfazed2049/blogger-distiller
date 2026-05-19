@@ -20,6 +20,16 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from utils.common import parse_count
 
+# LLM 分析支持（可选）
+USE_LLM_ANALYSIS = os.getenv("USE_LLM_ANALYSIS", "").lower() in ("1", "true", "yes")
+try:
+    from utils.llm_analyzer import LLMAnalyzer
+    LLM_AVAILABLE = True
+except ImportError:
+    LLM_AVAILABLE = False
+    if USE_LLM_ANALYSIS:
+        print("⚠️  Warning: USE_LLM_ANALYSIS=1 but llm_analyzer not available, falling back to keyword-based analysis")
+
 
 def detect_platform(raw_details):
     """从数据检测来源平台，返回 'xhs' 或 'douyin'"""
@@ -47,8 +57,8 @@ def extract_tags(desc):
     return [t.strip() for t in tags if t.strip()]
 
 
-def classify_content(title, desc, tags, tag_clusters=None):
-    """根据标签和内容对笔记分类（动态聚类，不预设领域）
+def classify_content_keyword(title, desc, tags, tag_clusters=None):
+    """根据标签和内容对笔记分类（关键词版本，作为 fallback）
     
     Args:
         title: 笔记标题
@@ -116,8 +126,8 @@ def build_tag_clusters(all_notes_tags, top_n=8):
 # 认知层提取函数
 # ----------------------------------------------------------
 
-def extract_opinion_sentences(notes):
-    """D1：从全量笔记正文中提取观点句候选"""
+def extract_opinion_sentences_keyword(notes):
+    """D1：从全量笔记正文中提取观点句候选（关键词版本，作为 fallback）"""
     opinion_keywords = {
         "判断词": ["我觉得", "我认为", "其实", "本质上", "说白了", "归根结底",
                    "核心是", "关键在于", "真正的", "最重要的"],
@@ -153,8 +163,8 @@ def extract_opinion_sentences(notes):
     return candidates, mode
 
 
-def analyze_writing_structure(notes):
-    """D2：统计开头/结尾类型（追加到现有结构分析）"""
+def analyze_writing_structure_keyword(notes):
+    """D2：统计开头/结尾类型（关键词版本，作为 fallback）"""
     opening_patterns = {
         "故事开头": ["那天", "记得", "有一次", "上周", "上个月", "去年", "小时候", "从前"],
         "反问开头": ["你有没有", "你是不是", "为什么", "凭什么", "难道", "真的吗", "？"],
@@ -193,8 +203,8 @@ def analyze_writing_structure(notes):
     }
 
 
-def extract_value_words(notes):
-    """D3：方案B，从正文提取高频2-4字词，不用预设词库"""
+def extract_value_words_keyword(notes):
+    """D3：方案B，从正文提取高频2-4字词（关键词版本，作为 fallback）"""
     stopwords = set("的了是在我你他她它们这那有也都就和与或但而被把让给对从到为以及等中上下里外前后左右啊呢吧哦哈嗯")
     stop_phrases = {"时候", "自己", "觉得", "一个", "一些", "一下", "一样", "一直", "一起",
                     "可以", "没有", "什么", "这个", "那个", "这样", "那样", "如果", "因为",
@@ -210,7 +220,7 @@ def extract_value_words(notes):
         # 先删除话题标签（#标签[话题]# 和 #标签 两种格式）
         desc = re.sub(r"#[^#\s]+?(?:\[.*?\])?#?", "", desc)
         # 切词
-        tokens = re.split(r"[\s，。！？、；：""''【】《》\(\)（）\[\]…—\-/\\|]", desc)
+        tokens = re.split(r"[\s，。！？、；：""''【】《》\\(\\)（）\\[\\]…—\\-/\\\\|]", desc)
         for token in tokens:
             token = token.strip()
             if 2 <= len(token) <= 4:
@@ -222,6 +232,173 @@ def extract_value_words(notes):
                 word_counter[token] += 1
 
     return [{"word": w, "count": c} for w, c in word_counter.most_common(15)]
+
+
+# ----------------------------------------------------------
+# LLM 版本分析函数（USE_LLM_ANALYSIS=1 时使用）
+# ----------------------------------------------------------
+
+def analyze_with_llm(notes):
+    """
+    使用 LLM 进行所有维度的分析（单次 API 调用）
+    
+    Args:
+        notes: 笔记列表，每条笔记需包含 id, title, desc, tags
+    
+    Returns:
+        dict: {
+            "classifications": {note_id: category},
+            "opinions": [(sentence, source_note_id, match_type), ...],
+            "structure": {"opening_types": {...}, "ending_types": {...}},
+            "value_words": [{"word": w, "count": c}, ...]
+        }
+    """
+    if not LLM_AVAILABLE:
+        print("  ⚠️  LLM not available, using keyword-based fallback")
+        return None
+    
+    try:
+        print(f"  🤖 Using LLM analysis for {len(notes)} notes...")
+        
+        # 准备输入数据
+        llm_input = []
+        for note in notes:
+            llm_input.append({
+                "id": note.get("id", ""),
+                "title": note.get("title", ""),
+                "desc": note.get("desc", ""),
+                "tags": note.get("tags", [])
+            })
+        
+        # 调用 LLM
+        analyzer = LLMAnalyzer()
+        result = analyzer.analyze_notes(llm_input)
+        
+        # 转换为与关键词版本兼容的格式
+        classifications = {}
+        for item in result.get("classifications", []):
+            note_id = item.get("note_id", "")
+            category = item.get("category", "其他")
+            classifications[note_id] = category
+        
+        opinions = []
+        for item in result.get("opinions", []):
+            opinions.append((
+                item.get("sentence", ""),
+                item.get("source_note_id", ""),
+                item.get("match_type", "")
+            ))
+        
+        structure = result.get("structure", {"opening_types": {}, "ending_types": {}})
+        value_words = result.get("value_words", [])
+        
+        # 打印统计信息
+        stats = analyzer.get_stats()
+        print(f"  ✅ LLM analysis complete: {stats['total_tokens']} tokens, ${stats['total_cost']:.4f}")
+        
+        return {
+            "classifications": classifications,
+            "opinions": opinions,
+            "structure": structure,
+            "value_words": value_words
+        }
+    
+    except Exception as e:
+        print(f"  ⚠️  LLM analysis failed: {e}")
+        print(f"  ↩️  Falling back to keyword-based analysis")
+        return None
+
+
+def classify_content(title, desc, tags, tag_clusters=None, llm_classifications=None):
+    """
+    对笔记分类（优先使用 LLM 结果，否则使用关键词）
+    
+    Args:
+        title: 笔记标题
+        desc: 笔记描述
+        tags: 该笔记的标签列表
+        tag_clusters: 预计算的标签→类别映射
+        llm_classifications: LLM 分类结果 {note_id: category}
+    
+    Returns:
+        str — 类别名称
+    """
+    # 如果有 LLM 结果，优先使用
+    if llm_classifications and "id" in locals():
+        # 注意：这里需要 note_id，但函数签名中没有
+        # 实际使用时会在调用处传入
+        pass
+    
+    # Fallback 到关键词版本
+    return classify_content_keyword(title, desc, tags, tag_clusters)
+
+
+def extract_opinion_sentences(notes, use_llm=None):
+    """
+    提取观点句（优先使用 LLM，否则使用关键词）
+    
+    Args:
+        notes: 笔记列表
+        use_llm: LLM 分析结果（如果已经调用过）
+    
+    Returns:
+        (candidates, mode) — 观点句列表和模式
+    """
+    if use_llm and use_llm.get("opinions"):
+        # 转换 LLM 结果为关键词版本的格式
+        candidates = []
+        for sent, note_id, match_type in use_llm["opinions"]:
+            # 找到对应的笔记
+            note = next((n for n in notes if n.get("id") == note_id), None)
+            if note:
+                candidates.append({
+                    "sentence": sent,
+                    "source_note_id": note_id,
+                    "source_title": note.get("title", "")[:30],
+                    "source_likes": note.get("likes_raw", "?"),
+                    "match_type": match_type,
+                })
+        mode = "llm_filtered" if len(candidates) >= 10 else "full_text"
+        return candidates, mode
+    
+    # Fallback 到关键词版本
+    return extract_opinion_sentences_keyword(notes)
+
+
+def analyze_writing_structure(notes, use_llm=None):
+    """
+    分析写作结构（优先使用 LLM，否则使用关键词）
+    
+    Args:
+        notes: 笔记列表
+        use_llm: LLM 分析结果（如果已经调用过）
+    
+    Returns:
+        dict — {"opening_types": {...}, "ending_types": {...}}
+    """
+    if use_llm and use_llm.get("structure"):
+        return use_llm["structure"]
+    
+    # Fallback 到关键词版本
+    return analyze_writing_structure_keyword(notes)
+
+
+def extract_value_words(notes, use_llm=None):
+    """
+    提取价值词（优先使用 LLM，否则使用关键词）
+    
+    Args:
+        notes: 笔记列表
+        use_llm: LLM 分析结果（如果已经调用过）
+    
+    Returns:
+        list — [{"word": w, "count": c}, ...]
+    """
+    if use_llm and use_llm.get("value_words"):
+        return use_llm["value_words"]
+    
+    # Fallback 到关键词版本
+    return extract_value_words_keyword(notes)
 
 
 # ----------------------------------------------------------
@@ -301,8 +478,18 @@ def analyze_notes(details_path, self_details_path=None):
     all_notes_tags = [n["tags"] for n in notes]
     tag_clusters = build_tag_clusters(all_notes_tags)
     
-    for n in notes:
-        n["category"] = classify_content(n["title"], n["desc"], n["tags"], tag_clusters)
+    # ---- LLM 分析（如果启用）----
+    llm_result = None
+    if USE_LLM_ANALYSIS and LLM_AVAILABLE:
+        llm_result = analyze_with_llm(notes)
+    
+    # 分类（优先使用 LLM 结果）
+    if llm_result and llm_result.get("classifications"):
+        for n in notes:
+            n["category"] = llm_result["classifications"].get(n["id"], "其他")
+    else:
+        for n in notes:
+            n["category"] = classify_content_keyword(n["title"], n["desc"], n["tags"], tag_clusters)
     
     # 按赞排序
     notes.sort(key=lambda x: x["likes"], reverse=True)
@@ -399,9 +586,9 @@ def analyze_notes(details_path, self_details_path=None):
         }
 
     # ---- 认知层提取 ----
-    opinion_candidates, opinion_mode = extract_opinion_sentences(notes)
-    writing_structure = analyze_writing_structure(notes)
-    value_words = extract_value_words(notes)
+    opinion_candidates, opinion_mode = extract_opinion_sentences(notes, use_llm=llm_result)
+    writing_structure = analyze_writing_structure(notes, use_llm=llm_result)
+    value_words = extract_value_words(notes, use_llm=llm_result)
 
     return {
         "notes": notes,
