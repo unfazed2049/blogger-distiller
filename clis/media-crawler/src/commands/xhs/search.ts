@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { initializeContext, outputJSON, handleCommandError } from '../utils';
+import { initializeContext, writeOutput, handleCommandError } from '../utils';
 
 export function createSearchCommand(): Command {
   const command = new Command('search')
@@ -7,6 +7,7 @@ export function createSearchCommand(): Command {
     .argument('<keyword>', 'Search keyword')
     .option('--provider <name>', 'Data provider to use', 'tikhub')
     .option('--limit <number>', 'Maximum number of results', '20')
+    .option('--output-file <path>', 'Write output to file instead of stdout')
     .action(async (keyword: string, options) => {
       try {
         const { provider, platform } = await initializeContext('xhs', options.provider);
@@ -15,12 +16,12 @@ export function createSearchCommand(): Command {
         // Search for bloggers
         const results = await platform.searchBloggers(keyword, { limit });
         
-        outputJSON({
+        writeOutput({
           success: true,
           keyword,
           count: results.length,
           results
-        });
+        }, options.outputFile);
       } catch (error) {
         handleCommandError(error);
       }

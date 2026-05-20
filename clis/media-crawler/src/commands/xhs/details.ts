@@ -1,19 +1,20 @@
 import { Command } from 'commander';
-import { initializeContext, outputJSON, handleCommandError } from '../utils';
+import { initializeContext, writeOutput, handleCommandError } from '../utils';
 import * as fs from 'fs';
 import * as path from 'path';
 
 export function createDetailsCommand(): Command {
   const command = new Command('details')
-    .description('Get detailed information for notes')
+    .description('Get detailed information for notes (output slimmed for analyze.py)')
     .option('--notes-file <path>', 'Path to notes list JSON file')
     .option('--note-ids <ids>', 'Comma-separated note IDs')
     .option('--provider <name>', 'Data provider to use', 'tikhub')
     .option('--output <dir>', 'Output directory', '.')
+    .option('--output-file <path>', 'Write output to file instead of stdout')
     .option('--checkpoint-interval <number>', 'Save checkpoint every N notes', '10')
     .action(async (options) => {
       try {
-        const { provider } = await initializeContext('xhs', options.provider);
+        const { provider, platform } = await initializeContext('xhs', options.provider);
         
         // Get note IDs from file or command line
         let noteIds: string[] = [];
@@ -57,8 +58,10 @@ export function createDetailsCommand(): Command {
           console.error(`[${i + 1}/${noteIds.length}] Fetching ${noteId}...`);
           
           try {
-            const detail = await provider.getNoteDetail('xhs', noteId);
-            details.push(detail);
+            const rawDetail = await provider.getNoteDetail('xhs', noteId);
+            // Strip to only fields analyze.py needs
+            const slimDetail = platform.normalizeNoteDetail(rawDetail);
+            details.push(slimDetail);
             completedIds.add(noteId);
             successCount++;
           } catch (error) {
@@ -87,13 +90,13 @@ export function createDetailsCommand(): Command {
           fs.unlinkSync(checkpointFile);
         }
         
-        outputJSON({
+        writeOutput({
           success: true,
           total: noteIds.length,
           successCount,
           errorCount,
           details
-        });
+        }, options.outputFile);
       } catch (error) {
         handleCommandError(error);
       }

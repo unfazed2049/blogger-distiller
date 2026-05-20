@@ -1,6 +1,14 @@
 """通用工具函数"""
 
+import os
 import re
+
+# 自动加载项目根目录 .env（向上查找，所有入口脚本 import common 时即生效）
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv 未安装时静默跳过，回退到系统环境变量
 
 
 def parse_count(s):

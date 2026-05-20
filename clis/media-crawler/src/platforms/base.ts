@@ -31,6 +31,52 @@ export interface Comment {
   [key: string]: unknown;
 }
 
+/**
+ * Slimmed note detail — only fields consumed by analyze.py.
+ * Matches the data contract between media-crawler and scripts/analyze.py.
+ */
+export interface SlimNoteDetail {
+  _feed_id: string;
+  note?: SlimContentFields;
+  video?: SlimContentFields;
+  comments?: { list: SlimCommentFields[] };
+  _meta?: Record<string, unknown>;
+  _error?: string;
+  _content_restricted?: boolean;
+}
+
+/** Fields analyze.py reads from the content object (note / video) */
+export interface SlimContentFields {
+  noteId?: string;
+  aweme_id?: string;
+  title?: string;
+  displayTitle?: string;
+  desc?: string;
+  type?: string;
+  interactInfo?: {
+    likedCount?: string;
+    collectedCount?: string;
+    commentCount?: string;
+    sharedCount?: string;
+  };
+  tagList?: Array<string | { name: string }>;
+  time?: number;
+}
+
+/** Fields analyze.py reads from each comment */
+export interface SlimCommentFields {
+  content?: string;
+  likeCount?: string;
+  like_count?: string;
+  speaker?: string;
+  userInfo?: { nickname?: string };
+  is_author?: boolean;
+  showTags?: string[];
+  subComments?: SlimCommentFields[];
+  sub_comments?: SlimCommentFields[];
+  reply_to?: string;
+}
+
 export interface PlatformAdapter {
   readonly platform: string;
   
@@ -56,4 +102,11 @@ export interface PlatformAdapter {
    * @param raw - Raw comments data from provider
    */
   normalizeComments(raw: any): Comment[];
+  
+  /**
+   * Strip a raw note detail to only the fields consumed by analyze.py.
+   * Each platform adapter implements its own field whitelist.
+   * @param raw - Raw NoteDetail from provider
+   */
+  normalizeNoteDetail(raw: any): SlimNoteDetail;
 }

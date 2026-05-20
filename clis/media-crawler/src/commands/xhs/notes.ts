@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { initializeContext, outputJSON, handleCommandError } from '../utils';
+import { initializeContext, writeOutput, handleCommandError } from '../utils';
 
 export function createNotesCommand(): Command {
   const command = new Command('notes')
@@ -8,6 +8,7 @@ export function createNotesCommand(): Command {
     .option('--provider <name>', 'Data provider to use', 'tikhub')
     .option('--cursor <cursor>', 'Pagination cursor')
     .option('--max-notes <number>', 'Maximum number of notes to fetch', '100')
+    .option('--output-file <path>', 'Write output to file instead of stdout')
     .action(async (userId: string, options) => {
       try {
         const { provider } = await initializeContext('xhs', options.provider);
@@ -33,14 +34,14 @@ export function createNotesCommand(): Command {
           allNotes = allNotes.slice(0, maxNotes);
         }
         
-        outputJSON({
+        writeOutput({
           success: true,
           userId,
           count: allNotes.length,
           notes: allNotes,
           hasMore,
           cursor
-        });
+        }, options.outputFile);
       } catch (error) {
         handleCommandError(error);
       }
